@@ -50,22 +50,109 @@ const bodyParts = [];
 
 const base64Regexp = /^data:.*?;base64,/;
 const containingFolder = path.dirname(filename);
-
-function addToBody(uri) {
-  let promise;
+function getBufferFromUri(uri) {
   if (uri.startsWith('data:')) {
     if (!base64Regexp.test(uri)) throw new Error('unsupported data URI');
-    promise = Promise.resolve(new Buffer(uri.replace(base64Regexp, ''), 'base64'));
+    return Promise.resolve(new Buffer(uri.replace(base64Regexp, ''), 'base64'));
   }
-  else promise = fs.readFileAsync(path.join(containingFolder, uri));
 
-  return promise.then(function (contents) {
+  return fs.readFileAsync(path.join(containingFolder, uri));
+}
+
+function addToBody(uri) {
+  return getBufferFromUri(uri).then(function (contents) {
     const offset = bodyLength;
     bodyParts.push(offset, contents);
     const length = contents.length;
     bodyLength += length;
     return { offset, length };
   });
+}
+
+function getMimeTypeFromDataUri(uri) {
+  if (!uri.startsWith('data:')) throw new Error('not a data URI');
+
+  const dataSeparatorIndex = uri.lastIndexOf(',');
+  return uri.slice(5, dataSeparatorIndex).replace(/;base64$/, '');
+}
+
+const mimeTypeMap = new Map();
+mimeTypeMap.set('image/png', getPngWidthHeight);
+mimeTypeMap.set('image/jpeg', getJpegWidthHeight);
+mimeTypeMap.set('image/gif', getGifWidthHeight);
+mimeTypeMap.set('image/bmp', getBmpWidthHeight);
+
+const mimeTypeList = Array.from(mimeTypeMap.values());
+
+function getWidthHeight(contents, mimeType) {
+  if (mimeType) {
+    const handler = mimeTypeMap.get(mimeType);
+    if (!handler) throw new Error('invalid MIME type');
+
+    const result = handler(contents);
+    if (!result) throw new Error('invalid image for type: ' + mimeType);
+    return result;
+  }
+
+  let result;
+  const success = mimeTypeList.some(function (handler) {
+    result = handler(contents);
+    if (result) return true;
+  });
+
+  if (success) return result;
+  throw new Error('not a valid image');
+}
+
+function getPngWidthHeight(contents) {
+  // Check file contains the first 4 bytes of the PNG signature.
+  if (contents.readUInt32BE(0) !== 0x89504E47) return null;
+
+  const width = contents.readUInt32BE(16);
+  const height = contents.readUInt32BE(20);
+  return { width, height };
+}
+
+let markers = [];
+for (let i = 0; i < 16; ++i) {
+  if (i !== 4 && i !== 0xC) markers.push(0xFFC0 + i);
+}
+
+markers = new Set(markers);
+
+function getJpegWidthHeight(contents) {
+  // Check file contains the SOI marker.
+  if (contents.readUInt16BE(0) !== 0xFFD8) return null;
+
+  let i = 2;
+  for (;;) {
+    if (i >= contents.length) return null;
+    if (markers.has(contents.readUInt16BE(i))) break;
+    i += contents.readUInt16BE(i + 2) + 2;
+  }
+
+  // NOTE: we're assuming that we're dealing with non-hierarchial images encoded in JFIF.
+  const height = contents.readUInt16BE(i + 5);
+  const width = contents.readUInt16BE(i + 7);
+  return { width, height };
+}
+
+function getGifWidthHeight(contents) {
+  // Check first 4 bytes of the GIF signature ("GIF8").
+  if (contents.readUint32BE(0) !== 0x47494638) return null;
+
+  const width = contents.readUInt16LE(6);
+  const height = contents.readUInt16LE(8);
+  return { width, height };
+}
+
+function getBmpWidthHeight(contents) {
+  // Check magic number is valid (first 2 characters should be "BM").
+  if (contents.readUInt16BE(0) !== 0x424D) return null;
+
+  const width = contents.readUInt32LE(18);
+  const height = contents.readUInt32LE(22);
+  return { width, height };
 }
 
 fs.readFileAsync(filename, 'utf-8').then(function (gltf) {
@@ -115,6 +202,9 @@ fs.readFileAsync(filename, 'utf-8').then(function (gltf) {
   if (embed.shaders) Object.keys(scene.shaders).forEach(function (shaderId) {
     const shader = scene.shaders[shaderId];
     const uri = shader.uri;
+
+    // The "uri" property is ignored by Binary GLTF readers, but technically needs to be there
+    // as extensions to GLTF can't remove existing required properties.
     shader.uri = '';
 
     const promise = addToBody(uri).then(function (obj) {
@@ -135,6 +225,8 @@ fs.readFileAsync(filename, 'utf-8').then(function (gltf) {
   Object.keys(scene.images).forEach(function (imageId) {
     const image = scene.images[imageId];
     const uri = image.uri;
+
+    const buffer = getBufferFromUri(uri);
 
     const promise = addToBody(uri).then(function (obj) {
       const bufferViewId = 'binary_images_' + imageId;
