@@ -36,8 +36,8 @@ if (argv.embed) {
 var filename = argv._[0];
 var BUFFER_NAME = argv.cesium ? 'KHR_binary_glTF' : 'binary_glTF';
 
-if (filename.indexOf('.gltf') != 4) {
-	console.error('Failed to create binary GLTF file:');
+if (filename.indexOf('.gltf') != filename.length - '.gltf'.length) {
+	console.error('Failed to create binary GLTF file from: '+ filename);
 	console.error('----------------------------------');
 	console.error('File specified does not have the .gltf extension.');
 	return;
@@ -132,31 +132,33 @@ fs.readFileAsync(filename, 'utf-8').then(function (gltf) {
 	});
 
 	// TODO: embed images into body (especially if already embedded as base64)
-	Object.keys(scene.images).forEach(function (imageId) {
-		var image = scene.images[imageId];
-		var uri = image.uri;
+	if(scene.images){
+		Object.keys(scene.images).forEach(function (imageId) {
+			var image = scene.images[imageId];
+			var uri = image.uri;
 
-		var promise = addToBody(uri).then(function (obj) {
-			var bufferViewId = 'binary_images_' + imageId;
-			// TODO: add extension properties
-			image.extensions =
-			{ KHR_binary_glTF:
-			{ bufferView: bufferViewId
-				, mimeType: 'image/i-dont-know'
-				, height: 9999
-				, width: 9999
-			}
-			};
+			var promise = addToBody(uri).then(function (obj) {
+				var bufferViewId = 'binary_images_' + imageId;
+				// TODO: add extension properties
+				image.extensions =
+				{ KHR_binary_glTF:
+				{ bufferView: bufferViewId
+					, mimeType: 'image/i-dont-know'
+					, height: 9999
+					, width: 9999
+				}
+				};
 
-			scene.bufferViews[bufferViewId] =
-			{ buffer: BUFFER_NAME
-				, byteLength: obj.length
-				, byteOffset: obj.offset
-			};
+				scene.bufferViews[bufferViewId] =
+				{ buffer: BUFFER_NAME
+					, byteLength: obj.length
+					, byteOffset: obj.offset
+				};
+			});
+
+			promises.push(promise);
 		});
-
-		promises.push(promise);
-	});
+	}
 
 	return Promise.all(promises).return(scene);
 }).then(function (scene) {
